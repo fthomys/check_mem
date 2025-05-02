@@ -24,28 +24,23 @@ type threshold struct {
 
 func parseThreshold(s string) (threshold, error) {
 	s = strings.TrimSpace(s)
-	if strings.HasSuffix(s, "%") {
-		val, err := strconv.ParseFloat(strings.TrimSuffix(s, "%"), 64)
-		if err != nil {
-			return threshold{}, fmt.Errorf("invalid percentage: %v", err)
-		}
-		return threshold{val, "%"}, nil
-	}
 	val, err := strconv.ParseFloat(s, 64)
 	if err != nil {
-		return threshold{}, fmt.Errorf("invalid value: %v", err)
+		return threshold{}, fmt.Errorf("invalid percentage: %v", err)
 	}
-	return threshold{val, "kB"}, nil
+	if val < 0 || val > 100 {
+		return threshold{}, fmt.Errorf("percentage must be between 0 and 100")
+	}
+	return threshold{val, "%"}, nil
 }
 
 func formatPerfData(values map[string]float64, includeHuge bool) string {
 	builder := strings.Builder{}
 	builder.WriteString(fmt.Sprintf("|TOTAL=%.0fKB;;;;", values["total"]))
 	builder.WriteString(fmt.Sprintf(" USED=%.0fKB;;;;", values["used"]))
-	builder.WriteString(fmt.Sprintf(" FREE=%.0fKB;;;;", values["free"]))
+	builder.WriteString(fmt.Sprintf(" AVAILABLE=%.0fKB;;;;", values["available"]))
 	builder.WriteString(fmt.Sprintf(" CACHED=%.0fKB;;;;", values["cached"]))
 	builder.WriteString(fmt.Sprintf(" BUFFERS=%.0fKB;;;;", values["buffers"]))
-	builder.WriteString(fmt.Sprintf(" AVAILABLE=%.0fKB;;;;", values["available"]))
 	if includeHuge {
 		builder.WriteString(fmt.Sprintf(" HUGEPAGES=%.0fKB;;;;", values["hugepages"]))
 	}
@@ -64,9 +59,9 @@ func exitWith(status string, msg string) {
 }
 
 func main() {
-	metric := flag.String("metric", "used", "Metric to check: used, free, available")
-	warnStr := flag.String("w", "", "Warning threshold (e.g. 80%% or 512000)")
-	critStr := flag.String("c", "", "Critical threshold (e.g. 90%% or 1024000)")
+	metric := flag.String("metric", "used", "Metric to check: 'used' or 'available'. 'free' is not supported (use 'available' instead).")
+	warnStr := flag.String("w", "", "Warning threshold (percentage only, e.g. 80)")
+	critStr := flag.String("c", "", "Critical threshold (percentage only, e.g. 90)")
 	includeHuge := flag.Bool("huge", false, "Include hugepages in performance data")
 	flag.Parse()
 
@@ -83,6 +78,10 @@ func main() {
 		exitWith("UNKNOWN", fmt.Sprintf("UNKNOWN - %v", err))
 	}
 
+	if warn.value >= crit.value {
+		exitWith("UNKNOWN", "UNKNOWN - WARNING must be less than CRITICAL")
+	}
+
 	vm, err := mem.VirtualMemory()
 	if err != nil {
 		exitWith("UNKNOWN", fmt.Sprintf("UNKNOWN - Failed to get virtual memory info: %v", err))
@@ -97,7 +96,6 @@ func main() {
 	values := map[string]float64{
 		"total":     float64(vm.Total) / 1024,
 		"used":      float64(vm.Used) / 1024,
-		"free":      float64(vm.Free) / 1024,
 		"available": float64(vm.Available) / 1024,
 		"cached":    float64(vm.Cached) / 1024,
 		"buffers":   float64(vm.Buffers) / 1024,
@@ -107,59 +105,27 @@ func main() {
 	}
 
 	m := strings.ToLower(*metric)
-	currentVal, ok := values[m]
-	if !ok {
-		exitWith("UNKNOWN", fmt.Sprintf("UNKNOWN - Invalid metric '%s'", m))
+	if m != "used" && m != "available" {
+		exitWith("UNKNOWN", fmt.Sprintf("UNKNOWN - Invalid metric '%s'. Only 'used' and 'available' are supported.", m))
 	}
+
+	currentVal := values[m]
 	total := values["total"]
 	percent := (currentVal / total) * 100
 	perf := formatPerfData(values, *includeHuge)
 
-	isPercent := warn.unit == "%" && crit.unit == "%"
-
-	switch m {
-	case "free", "available":
-		if isPercent && warn.value <= crit.value {
-			exitWith("UNKNOWN", "UNKNOWN - WARNING must be greater than CRITICAL for free/available memory")
-		} else if !isPercent && warn.value <= crit.value {
-			exitWith("UNKNOWN", "UNKNOWN - WARNING must be greater than CRITICAL for free/available memory (kB)")
-		}
-	case "used":
-		if isPercent && warn.value >= crit.value {
-			exitWith("UNKNOWN", "UNKNOWN - WARNING must be less than CRITICAL for used memory")
-		} else if !isPercent && warn.value >= crit.value {
-			exitWith("UNKNOWN", "UNKNOWN - WARNING must be less than CRITICAL for used memory (kB)")
-		}
-	}
-
 	switch m {
 	case "used":
-		if isPercent {
-			if percent > crit.value {
-				exitWith("CRITICAL", fmt.Sprintf("CRITICAL - %.1f%% (%.0f kB) used memory%s", percent, currentVal, perf))
-			} else if percent > warn.value {
-				exitWith("WARNING", fmt.Sprintf("WARNING - %.1f%% (%.0f kB) used memory%s", percent, currentVal, perf))
-			}
-		} else {
-			if currentVal > crit.value {
-				exitWith("CRITICAL", fmt.Sprintf("CRITICAL - %.1f%% (%.0f kB) used memory%s", percent, currentVal, perf))
-			} else if currentVal > warn.value {
-				exitWith("WARNING", fmt.Sprintf("WARNING - %.1f%% (%.0f kB) used memory%s", percent, currentVal, perf))
-			}
+		if percent > crit.value {
+			exitWith("CRITICAL", fmt.Sprintf("CRITICAL - %.1f%% (%.0f kB) used memory%s", percent, currentVal, perf))
+		} else if percent > warn.value {
+			exitWith("WARNING", fmt.Sprintf("WARNING - %.1f%% (%.0f kB) used memory%s", percent, currentVal, perf))
 		}
-	case "free", "available":
-		if isPercent {
-			if percent < crit.value {
-				exitWith("CRITICAL", fmt.Sprintf("CRITICAL - %.1f%% (%.0f kB) %s memory%s", percent, currentVal, m, perf))
-			} else if percent < warn.value {
-				exitWith("WARNING", fmt.Sprintf("WARNING - %.1f%% (%.0f kB) %s memory%s", percent, currentVal, m, perf))
-			}
-		} else {
-			if currentVal < crit.value {
-				exitWith("CRITICAL", fmt.Sprintf("CRITICAL - %.1f%% (%.0f kB) %s memory%s", percent, currentVal, m, perf))
-			} else if currentVal < warn.value {
-				exitWith("WARNING", fmt.Sprintf("WARNING - %.1f%% (%.0f kB) %s memory%s", percent, currentVal, m, perf))
-			}
+	case "available":
+		if percent < crit.value {
+			exitWith("CRITICAL", fmt.Sprintf("CRITICAL - %.1f%% (%.0f kB) available memory%s", percent, currentVal, perf))
+		} else if percent < warn.value {
+			exitWith("WARNING", fmt.Sprintf("WARNING - %.1f%% (%.0f kB) available memory%s", percent, currentVal, perf))
 		}
 	}
 
