@@ -1,6 +1,6 @@
 #!/bin/bash
 
-SOURCE_FILE="check_mem.go"
+SOURCE_FILE="main.go"
 BINARY_NAME="check_mem"
 
 echo "Building $SOURCE_FILE..."
