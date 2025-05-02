@@ -38,7 +38,7 @@ func parseThreshold(s string) (threshold, error) {
 	return threshold{val, "kB"}, nil
 }
 
-func formatPerfData(values map[string]float64, warn, crit threshold, metric string, includeHuge bool) string {
+func formatPerfData(values map[string]float64, includeHuge bool) string {
 	builder := strings.Builder{}
 	builder.WriteString(fmt.Sprintf("|TOTAL=%.0fKB;;;;", values["total"]))
 	builder.WriteString(fmt.Sprintf(" USED=%.0fKB;;;;", values["used"]))
@@ -113,7 +113,7 @@ func main() {
 	}
 	total := values["total"]
 	percent := (currentVal / total) * 100
-	perf := formatPerfData(values, warn, crit, m, *includeHuge)
+	perf := formatPerfData(values, *includeHuge)
 
 	isPercent := warn.unit == "%" && crit.unit == "%"
 
